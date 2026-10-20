@@ -1,0 +1,11 @@
+# local artifacts
+.venv/
+.cache/
+wheels/
+tmp/
+models/
+testdata/*.wav
+*.log
+
+# whisperlivekit clone is tracked as a plain checkout, not a submodule here
+wlk/
