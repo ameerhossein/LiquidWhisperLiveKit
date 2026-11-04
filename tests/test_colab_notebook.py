@@ -111,3 +111,37 @@ def test_all_code_cells_compile():
     for index, cell in enumerate(notebook()["cells"]):
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), f"cell-{index}", "exec")
+
+
+def test_notebook_structure_and_form_cells():
+    data = notebook()
+    assert len(data["cells"]) == 12
+    assert data["cells"][0]["cell_type"] == "markdown"
+    assert data["cells"][-1]["cell_type"] == "markdown"
+    code_cells = [cell for cell in data["cells"] if cell["cell_type"] == "code"]
+    assert len(code_cells) == 10
+    assert code_cells[0]["metadata"].get("cellView") == "form"
+    assert code_cells[-1]["metadata"].get("cellView") == "form"
+
+
+def test_stop_logs_are_opt_in():
+    source = code(notebook())
+    assert 'PRINT_LOGS = False #@param {type:"boolean"}' in source
+    assert "if PRINT_LOGS" in source
+
+
+def test_stop_process_checks_the_expected_command():
+    source = code(notebook())
+    assert 'stop_process(SERVER_PID, ("run.sh", "scripts/serve.py"))' in source
+    assert 'stop_process(TUNNEL_PID, ("cloudflared",))' in source
+
+
+def test_tunnel_health_requires_ready_and_does_not_link_unverified():
+    data = notebook()
+    cells = ["".join(cell["source"]) for cell in data["cells"] if cell["cell_type"] == "code"]
+    tunnel = next(source for source in cells if '"--no-autoupdate"' in source)
+    assert "health_payload_is_ready(" in code(data)
+    assert "except ValueError" in tunnel
+    assert "if tunnel_health:" in tunnel
+    assert tunnel.index("display(HTML") > tunnel.index("if tunnel_health:")
+    assert "unverified" in tunnel.lower()

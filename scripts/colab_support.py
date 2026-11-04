@@ -3,7 +3,10 @@
 Keeping these out of the notebook makes the layout and log parsing rules
 testable without a GPU or a running tunnel.
 """
+import os
 import re
+import signal
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable, Union
@@ -45,21 +48,28 @@ def find_ct2_subfolder(files: Iterable[str], requested: str = "") -> str:
         for parent, names in directories.items()
         if set(REQUIRED_CT2_FILES).issubset(names)
     }
-    requested = requested.strip().strip("/")
+    with_model = sorted(
+        parent for parent, names in directories.items() if "model.bin" in names
+    )
 
-    if requested:
+    requested_raw = requested.strip()
+    requested = requested_raw.strip("/")
+    if requested == ".":
+        requested = ""
+    explicit = bool(requested_raw)
+
+    if explicit:
         if requested not in complete:
             candidates = ", ".join(sorted(repr(path or "<root>") for path in complete)) or "none"
+            model_candidates = ", ".join(repr(path or "<root>") for path in with_model) or "none"
             raise ValueError(
-                f"{requested!r} is not a complete CT2 directory. "
-                f"Complete directories: {candidates}."
+                f"{requested_raw!r} is not a complete CT2 directory. "
+                f"Complete directories: {candidates}. "
+                f"Directories containing model.bin: {model_candidates}."
             )
         return requested
 
     if not complete:
-        with_model = sorted(
-            parent for parent, names in directories.items() if "model.bin" in names
-        )
         candidates = ", ".join(repr(path or "<root>") for path in with_model) or "none"
         required = ", ".join(REQUIRED_CT2_FILES)
         raise ValueError(
@@ -110,3 +120,60 @@ def find_cudnn_library(
         if matches:
             return str(matches[0])
     return None
+
+
+def read_pid(pid_file: Union[str, Path]) -> Union[int, None]:
+    """Read a positive PID from a file, or return None for missing/invalid data."""
+    try:
+        pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def pid_matches(pid: int, *needles: str) -> bool:
+    """Return True when the process command line contains one of the needles."""
+    if pid <= 0 or not needles:
+        return False
+    try:
+        command = (
+            Path(f"/proc/{pid}/cmdline")
+            .read_bytes()
+            .replace(b"\0", b" ")
+            .decode("utf-8", "replace")
+        )
+    except OSError:
+        return False
+    return any(needle in command for needle in needles)
+
+
+def stop_process(pid_file: Union[str, Path], expected: Iterable[str]) -> bool:
+    """SIGTERM/SIGKILL a recorded process group only if its command matches."""
+    pid_file = Path(pid_file)
+    pid = read_pid(pid_file)
+    if pid is None:
+        pid_file.unlink(missing_ok=True)
+        return False
+
+    expected = tuple(expected)
+    if not pid_matches(pid, *expected):
+        print(f"Skipping PID {pid}: command line does not match {expected}.")
+        pid_file.unlink(missing_ok=True)
+        return False
+
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        time.sleep(1)
+    except ProcessLookupError:
+        pass
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    pid_file.unlink(missing_ok=True)
+    return True
+
+
+def health_payload_is_ready(payload: object) -> bool:
+    """True only for a JSON object that explicitly reports ``ready: true``."""
+    return isinstance(payload, dict) and payload.get("ready") is True
