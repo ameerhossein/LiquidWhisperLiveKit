@@ -1,5 +1,10 @@
 # BuzzASR / WhisperLiveKit review
 
+Historical audit: the download, tokenizer preparation, and CT2 conversion
+code discussed below has been removed from this inference-only project.
+Model export and conversion belong in the separate stt project. Setup now
+accepts prepared CT2 artifacts locally or from Hugging Face.
+
 ## Fix status
 
 All ten code findings below have been addressed. The original findings are

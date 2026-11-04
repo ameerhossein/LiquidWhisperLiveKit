@@ -19,9 +19,42 @@ def device_name(value=None):
 
 
 def model_path(device=None):
-    return os.environ.get("MODEL_DIR") or str(ROOT / "models" / (
-        "buzzasr-persian-ct2-int8" if device_name(device) == "cpu"
+    device = device_name(device)
+    local = os.environ.get("MODEL_DIR")
+    repo = os.environ.get("HF_REPO_ID")
+    if local and repo:
+        raise ValueError("Set MODEL_DIR or HF_REPO_ID, not both")
+    if local:
+        return local
+    if repo:
+        return str(download_model(repo, os.environ.get("HF_REVISION"),
+                                  os.environ.get("HF_SUBFOLDER", "")))
+    return str(ROOT / "models" / (
+        "buzzasr-persian-ct2-int8" if device == "cpu"
         else "buzzasr-persian-ct2-fp16"))
+
+
+def download_model(repo_id, revision=None, subfolder=""):
+    """Resolve a prepared CT2 artifact using the HF cache and saved credentials."""
+    from pathlib import PurePosixPath
+    from huggingface_hub import snapshot_download
+
+    folder = PurePosixPath(subfolder or ".")
+    if folder.is_absolute() or ".." in folder.parts or "\\" in subfolder:
+        raise ValueError("HF_SUBFOLDER must be a relative path within the repo")
+    prefix = "" if folder == PurePosixPath(".") else folder.as_posix() + "/"
+    snapshot = snapshot_download(
+        repo_id=repo_id, revision=revision or None,
+        allow_patterns=[prefix + name for name in REQUIRED_MODEL_FILES],
+        local_files_only=os.environ.get("HF_HUB_OFFLINE", "").upper() in ("1", "ON", "YES", "TRUE"),
+    )
+    try:
+        return require_model(Path(snapshot) / folder)
+    except ValueError as exc:
+        raise ValueError(
+            f"{repo_id}/{prefix} must contain a prepared CTranslate2 model. "
+            "Export HF weights to CT2 in the stt project first. " + str(exc)
+        ) from exc
 
 
 def model_options(device=None, threads=None):
@@ -84,9 +117,15 @@ if __name__ == "__main__":
     import argparse
     import sys
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check-model", required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--check-model")
+    action.add_argument("--resolve-model", action="store_true")
     try:
-        require_model(parser.parse_args().check_model)
+        args = parser.parse_args()
+        if args.resolve_model:
+            print(require_model(model_path()))
+        else:
+            require_model(args.check_model)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(2)

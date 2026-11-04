@@ -4,12 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source env.sh
 export DEVICE="${DEVICE:-cpu}"
-case "$DEVICE" in
-  cpu) DEFAULT_MODEL_DIR="models/buzzasr-persian-ct2-int8"; DEFAULT_COALESCE=6 ;;
-  gpu|cuda) DEFAULT_MODEL_DIR="models/buzzasr-persian-ct2-fp16"; DEFAULT_COALESCE=0 ;;
-  *) echo "DEVICE must be cpu, gpu, or cuda (Metal is unsupported)" >&2; exit 2 ;;
-esac
-export MODEL_DIR="${MODEL_DIR:-$DEFAULT_MODEL_DIR}"
+DEFAULT_COALESCE=0
+[[ "$DEVICE" == "cpu" ]] && DEFAULT_COALESCE=6
+MODEL_DIR="$(.venv/bin/python scripts/settings.py --resolve-model)"
+export MODEL_DIR
+unset HF_REPO_ID HF_SUBFOLDER HF_REVISION
 .venv/bin/python scripts/settings.py --check-model "$MODEL_DIR"
 AUDIO="${1:-testdata/verify-fa.wav}"
 EXPECTED="${EXPECTED_FILE:-}"

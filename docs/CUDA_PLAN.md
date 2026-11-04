@@ -1,8 +1,8 @@
 # CUDA migration plan
 
 Status: **not executed here** — this machine has no NVIDIA GPU (`torch.cuda.is_available()`
-is False). Everything below is the same pipeline, with the float16 CTranslate2
-build, intended to be run on a CUDA box and compared against the CPU numbers in
+is False). Everything below is the same pipeline, with a prepared float16 CTranslate2
+artifact, intended to be run on a CUDA box and compared against the CPU numbers in
 `README.md`.
 
 The plan has two goals:
@@ -43,7 +43,7 @@ which in turn buys back the decoding settings above.
   ```
 
 * Python 3.12 (WhisperLiveKit requires `<3.14`), `uv`, `ffmpeg`, ~12 GB free disk
-  (2.9 GB fp16 model + 3.1 GB raw weights if rebuilding + venv).
+  (fp16 CT2 model + venv).
 * Diarization only: ~500 MB more for the Sortformer `.nemo`.
 
 Quick preflight, to be run **after** the venv step in §3:
@@ -69,22 +69,17 @@ rsync -a --info=progress2 \
   /home/ameer/Hobbies/livebuzzasr/ gpu:~/livebuzzasr/
 ```
 
-That is ~7.5 GB (mostly `models/`). If the link is slow, copy only what runs:
+For a smaller transfer, exclude `models/` and provide a prepared FP16 CT2
+artifact using `MODEL_DIR`, or download one from an HF repo:
 
 ```bash
-rsync -a --info=progress2 \
-  --exclude '.cache' --exclude 'wheels' --exclude '.venv' \
-  --exclude 'models/buzzasr-persian' --exclude 'models/buzzasr-persian-ct2-int8' \
-  --exclude 'models/buzzasr-persian-hf' --exclude 'models/buzzasr-persian-tok' \
-  /home/ameer/Hobbies/livebuzzasr/ gpu:~/livebuzzasr/
+DEVICE=gpu HF_REPO_ID=owner/model-ct2 HF_SUBFOLDER=path/to/ct2 \
+  HF_REVISION=COMMIT_SHA ./setup.sh
 ```
 
-Required on the GPU box in that case: `models/buzzasr-persian-ct2-fp16/` (2.9 GB)
-plus `scripts/`, `wlk/`, `run.sh`, `env.sh`, `testdata/`.
-
-Option B — rebuild from scratch: run `./setup.sh`, then
-`.venv/bin/python scripts/build_ct2.py --quantization float16`. Needs the 3.1 GB
-HF download; the conversion itself takes ~40 s.
+HF authentication uses saved credentials or `HF_TOKEN`. Omit `HF_SUBFOLDER`
+when CT2 files are at the repo root. Conversion is handled in the separate
+`stt` project; this checkout only installs the runtime and runs inference.
 
 ---
 
@@ -113,24 +108,18 @@ Notes
 
 ## 4. Verify the converted model before running anything
 
-The fp16 directory must carry the three patches (`build_ct2.py` writes them):
+Validate the prepared artifact without loading weights:
 
 ```bash
-.venv/bin/python - <<'PY'
-import json, tokenizers
-d = "models/buzzasr-persian-ct2-fp16"
-cfg = json.load(open(f"{d}/config.json"))
-print("lang_ids", cfg["lang_ids"], "heads", len(cfg["alignment_heads"]))
-vocab = json.load(open(f"{d}/vocabulary.json"))
-print("empty token at", vocab.index(""))
-tok = tokenizers.Tokenizer.from_file(f"{d}/tokenizer.json")
-print("fa", tok.token_to_id("<|fa|>"), "notimestamps", tok.token_to_id("<|notimestamps|>"))
-PY
+DEVICE=gpu .venv/bin/python scripts/settings.py --resolve-model
+# Or check an explicit local directory:
+.venv/bin/python scripts/settings.py --check-model /path/to/ct2
 ```
 
-Expected: `lang_ids [51908]`, `heads 10`, empty token at `220`, `fa 51908`,
-`notimestamps 51972`. Any deviation means the artifact was rebuilt without the
-patch — re-run `scripts/build_ct2.py --quantization float16`.
+The artifact must include `model.bin`, `config.json`, `vocabulary.json`,
+`tokenizer.json`, and `preprocessor_config.json`. BuzzASR's tokenizer IDs,
+Persian language mapping, and alignment heads must be set during export in
+`stt`. The inference project consumes the exported files as supplied.
 
 ---
 

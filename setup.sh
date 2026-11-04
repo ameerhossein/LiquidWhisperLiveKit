@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# One-shot setup from an empty checkout. Needs ~10 GB free disk.
-#   1. Python 3.12 venv + whisperlivekit (offline from the copied uv cache)
-#   2. fix the BuzzASR tokenizer
-#   3. download the 2.9 GiB checkpoint (resumable)
-#   4. convert to CTranslate2 (int8 for CPU, float16 for CUDA)
+# Install the inference runtime. Supply a prepared CT2 model locally or on HF.
 set -euo pipefail
 cd "$(dirname "$0")"
 source env.sh
@@ -43,7 +39,7 @@ else
     --index-url "$TORCH_INDEX"
   uv pip install --python .venv/bin/python -r requirements.lock -e ./wlk
 fi
-.venv/bin/python scripts/fetch_model.py
-.venv/bin/python scripts/prepare_tokenizer.py
-.venv/bin/python scripts/build_ct2.py --validate-runtime
-./scripts/verify.sh
+MODEL_DIR="$(.venv/bin/python scripts/settings.py --resolve-model)"
+.venv/bin/python scripts/settings.py --check-model "$MODEL_DIR"
+echo "Inference runtime ready. Model: $MODEL_DIR"
+echo "Run ./run.sh to serve; ./scripts/verify.sh runs acceptance checks."

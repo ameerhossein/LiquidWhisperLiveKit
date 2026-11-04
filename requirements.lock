@@ -51,7 +51,6 @@ pyyaml==6.0.3
 regex==2026.9.29
 requests==2.34.2
 rich==15.0.0
-safetensors==0.8.0
 scikit-learn==1.9.1
 scipy==1.18.1
 setuptools==81.0.0
@@ -64,7 +63,6 @@ threadpoolctl==3.7.0
 tiktoken==0.14.0
 tokenizers==0.23.3
 tqdm==4.70.1
-transformers==5.20.2
 truststore==0.10.5
 typer==0.27.3
 typing-extensions==4.16.0

@@ -44,90 +44,57 @@ is right; the *latency* is CPU-bound (see [Performance](#performance)).
 
 ## Quick start
 
+This project runs inference with prepared CTranslate2 models. Training, tokenizer
+repair, export, and CT2 conversion live in the separate `stt` project.
+
+For a local model:
+
 ```bash
-source env.sh                                    # venv + project-local caches
-.venv/bin/python scripts/prepare_tokenizer.py    # rebuild corrected tokenizer
-.venv/bin/python scripts/build_ct2.py            # HF -> int8 (CPU) + float16 (GPU)
-./scripts/verify.sh                              # offline + REST + WebSocket
-./run.sh                                         # serve
+MODEL_DIR=/path/to/prepared-ct2 ./setup.sh
+MODEL_DIR=/path/to/prepared-ct2 ./run.sh
 ```
 
-Then open <http://127.0.0.1:8000>, or:
+Without `MODEL_DIR`, CPU uses `models/buzzasr-persian-ct2-int8` and CUDA uses
+`models/buzzasr-persian-ct2-fp16`. Copy a prepared export there before setup.
+
+For an HF repo containing a **CT2 artifact** (`model.bin` and its configs):
 
 ```bash
-# REST (OpenAI-compatible). Slow on CPU: --rest-timeout is raised by run.sh.
+# Private repos: save credentials once, or supply HF_TOKEN in the environment.
+source env.sh
+.venv/bin/hf auth login
+HF_REPO_ID=owner/model-ct2 HF_REVISION=main ./run.sh
+# An artifact nested in a run mirror:
+HF_REPO_ID=owner/run-mirror HF_SUBFOLDER=runs/RUN_ID/ct2 \
+  HF_REVISION=COMMIT_SHA DEVICE=gpu ./run.sh
+```
+
+Use the same HF variables with `./setup.sh` on a fresh checkout; `HF_TOKEN`
+works before the CLI is installed. Downloads use the project HF cache and reuse
+saved authentication. Set `HF_HUB_OFFLINE=1` to use cached snapshots only. Set
+one of `MODEL_DIR` or `HF_REPO_ID`. HF repositories containing Transformers
+weights (`model.safetensors`) must be converted in `stt` before use here.
+`HF_SUBFOLDER` points to the CT2 directory, not the merged HF weights directory.
+
+```bash
+./scripts/verify.sh                       # offline + REST + WebSocket acceptance
+./run.sh                                 # serve at http://127.0.0.1:8000
 curl http://127.0.0.1:8000/v1/audio/transcriptions \
-     -F file=@testdata/persian-10s.wav -F response_format=verbose_json
-
-# WebSocket streaming: sends raw PCM, so start the server with --pcm-input
+  -F file=@testdata/verify-fa.wav -F response_format=verbose_json
 ./run.sh --pcm-input
-.venv/bin/python scripts/stream_test.py testdata/persian-10s.wav \
-     --url ws://127.0.0.1:8000/asr --realtime 1.0
-
-# Offline file + real-time factor
-.venv/bin/python scripts/transcribe.py testdata/persian-10s.wav --words
+.venv/bin/python scripts/stream_test.py testdata/verify-fa.wav \
+  --url ws://127.0.0.1:8000/asr --realtime 1.0
+.venv/bin/python scripts/transcribe.py testdata/verify-fa.wav --words
+HF_REPO_ID=owner/model-ct2 .venv/bin/python scripts/transcribe.py audio.wav
 ```
 
----
+Local models may also be selected with the offline tool's `--model` argument.
+For a different fine-tune, pass its reference audio/text to acceptance checks;
+the default fixture's exact transcript was measured with the original BuzzASR model.
 
-## Why this needs fixing at all
+## Decoding behavior
 
-The checkpoint looks like a drop-in Whisper model, but three details silently
-break every generic Whisper integration. Each has a concrete symptom.
-
-### 1. The tokenizer shadows its own special tokens
-
-`vocab.json` has 51,865 BPE entries whose **first 1,609 are the special and
-timestamp strings** (`<|endoftext|>`=0, `<|startoftranscript|>`=1,
-`<|notimestamps|>`=7, `<|0.00|>`=108 … `<|30.00|>`=1608). The same strings also
-exist in `added_tokens.json` at **51,865…53,473**, which is what the checkpoint
-actually uses:
-
-```
-bos/eos/pad=51865  decoder_start=51866  <|fa|>=51908
-<|transcribe|>=51968  <|notimestamps|>=51972  <|0.00|>=51973
-```
-
-Hugging Face resolves a string against the BPE vocab first, so
-`convert_tokens_to_ids("<|fa|>")` returns **51906**, `<|endoftext|>` returns
-**0**, and `timestamp_begin` becomes **8**. In practice: empty transcripts
-(faster-whisper drops every token `< eot`), no timestamps, wrong prompt.
-
-`scripts/prepare_tokenizer.py` keeps all 51,865 BPE ids (so text ids
-1,609…51,864 — and therefore the embedding rows — stay put) but renames the
-1,509 shadowed placeholders, then re-adds the real specials in ascending id
-order. The result is exactly 53,474 tokens with every id matching
-`generation_config.json`; the script asserts that and round-trips a Persian
-sentence.
-
-### 2. CTranslate2 thinks the model is English-only
-
-CTranslate2 decides "multilingual" with a heuristic:
-
-```cpp
-_is_multilingual = vocabulary.to_id("") != vocabulary.unk_id();
-```
-
-Whisper's original multilingual vocabularies contain an empty-string token;
-BuzzASR's Persian BPE does not. faster-whisper then logs *"The current model is
-English-only but the language parameter is set to 'fa'"* and drops the
-`<|fa|><|transcribe|>` prompt.
-
-`scripts/build_ct2.py` writes `""` into `vocabulary.json[220]` after conversion.
-Id 220 is a dead placeholder row in this checkpoint, and faster-whisper decodes
-with `tokenizer.json`, not this file, so nothing else is affected.
-
-### 3. `lang_to_id` and alignment heads never reach the converter
-
-* The converter reads `generation_config.lang_to_id`, but transformers 5 drops
-  unknown `GenerationConfig` fields on load, so `lang_ids` ends up empty and
-  `detect_language()` would fail. The build script writes `lang_ids: [51908]`.
-* BuzzASR ships **no alignment heads**. The converter's fallback ("last half of
-  the layers × every head" = 320 heads) produced word timings that collapsed
-  onto identical values. The build script installs whisper-large-v3's 10
-  published heads, which fixes timing and removes the DTW overhead.
-
-### 4. Decoding defaults fight this model
+### Decoding defaults fight this model
 
 WhisperLiveKit hardcodes `beam_size=5` and leaves faster-whisper's temperature
 fallback at `[0.0 … 1.0]`. On *partial* buffers (every streaming update) the
@@ -143,7 +110,7 @@ Beam 5 additionally latches onto repetition loops. The model card recommends
 `num_beams=1, no_repeat_ngram_size=3, repetition_penalty=1.2`; on a mid-sentence
 slice that is 22 s coherent vs 38 s looping.
 
-### 5. Prompt carry-over poisons the stream
+### Prompt carry-over poisons the stream
 
 WhisperLiveKit feeds the committed transcript back as `initial_prompt` and keeps
 `condition_on_previous_text=True`. For this model that is destructive: the
@@ -206,20 +173,14 @@ fallback and 0 s coalescing instead of the CPU-safe settings.
 | `env.sh` | venv + `HF_HOME`/`UV_CACHE_DIR` inside the project |
 | `run.sh` | server launcher: `DEVICE`, `HOST`, `PORT`, `ASR_COALESCE`, `REST_TIMEOUT`, `LOG_LEVEL` |
 | `scripts/serve.py` | `wlk` launcher with the decoding settings above |
-| `scripts/prepare_tokenizer.py` | fixes shadowed special tokens, validates ids |
-| `scripts/build_ct2.py` | HF → CTranslate2 int8/float16 + the three config patches |
-| `scripts/fetch.py` | resumable multi-connection downloader (HF signed URLs expire) |
 | `scripts/transcribe.py` | offline transcription + real-time factor |
 | `scripts/stream_test.py` | streams a WAV into `/asr` over WebSocket (PCM) |
 | `scripts/verify.sh` | offline + REST + streaming end-to-end check |
-| `scripts/hf_reference.py` | plain-transformers reference transcription |
 | `scripts/bench_cpu.py`, `bench_encoder.py` | thread/beam benchmarks |
-| `models/buzzasr-persian/` | raw HF files (3.1 GB safetensors) |
-| `models/buzzasr-persian-tok/` | corrected tokenizer |
 | `models/buzzasr-persian-ct2-int8/` | CTranslate2 model for CPU (1.5 GB) |
 | `models/buzzasr-persian-ct2-fp16/` | CTranslate2 model for CUDA (2.9 GB) |
 | `wlk/` | WhisperLiveKit clone, unmodified |
-| `wheels/`, `.cache/`, `.venv/` | offline build artifacts |
+| `wheels/`, `.cache/`, `.venv/` | cached runtime dependencies and HF downloads |
 
 ## Environment notes
 
@@ -307,36 +268,20 @@ or rolling-window re-diarization pass, which fixes identity swaps for 4 speakers
   is required. English audio produces fluent Persian hallucination (by design —
   it has no way to say "this isn't Persian").
 
-## Using another BuzzASR language
+## Reproducible runtime setup
 
-All BuzzASR checkpoints share this layout. Change `--src`/`--tok` in
-`scripts/prepare_tokenizer.py`, then `--src`/`--tok`/`--out-prefix` in
-`scripts/build_ct2.py`, and update three constants: the language id
-(`<|xx|>`), the `lang_ids` patch, and `--language` in `run.sh`.
-
-
-## Reliability fixes and reproducible setup
-
-`./setup.sh` now pins WhisperLiveKit to commit
-`363e4f6d029694d9c81ae548beddd9d3c88a3637`, installs the Python 3.12 runtime
-closure from `requirements.lock`, and fetches every model asset listed in
-`model-manifest.json` at a fixed Hugging Face revision with integrity checks.
-Torch and torchaudio use a matched 2.11.0 pair, installed separately for CPU or
-CUDA. For CUDA, set `DEVICE=gpu` and, when needed, `TORCH_INDEX_URL` to the
-appropriate official PyTorch wheel index. The existing venv is not silently
-recreated. `uv`, `git`, `ffmpeg`, and `curl` are required.
+`./setup.sh` pins WhisperLiveKit to commit
+`363e4f6d029694d9c81ae548beddd9d3c88a3637` and installs the Python 3.12 runtime
+from `requirements.lock`. It validates a prepared local or HF CT2 artifact;
+it does not download raw checkpoints or build models. Torch and torchaudio
+use a matched 2.11.0 pair, installed separately for CPU or CUDA. For CUDA, set
+`DEVICE=gpu` and, when needed, `TORCH_INDEX_URL`. `uv`, `git`, `ffmpeg`, and
+`curl` are required. Optional diarization dependencies are installed separately.
 
 `env.sh` derives its location from the checkout, so the project can be moved.
 `DEVICE=cpu` explicitly selects CPU/int8_float32; `DEVICE=gpu` or `cuda` selects
 CUDA/float16 and fails if CUDA is unavailable. Metal is unsupported by this
 CTranslate2 adaptation. Launchers check required model files before loading.
-
-Downloads use append-only parts under `<output>.download-v2/`, validate each
-Content-Range, bind resume state to the resource and layout, and publish only
-a completed, checksum-verified replacement. Old sparse `.partN` files are never
-reused. Converter failures preserve the previous model. Metadata validation no
-longer loads the fp16 model into CPU RAM; `--validate-runtime` additionally loads
-each int8 model once.
 
 All transcription and benchmark scripts share `WLK_PROFILE=tuned` (default) or
 `WLK_PROFILE=baseline`. Existing WLK decoding overrides still apply. Use
