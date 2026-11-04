@@ -92,6 +92,25 @@ Local models may also be selected with the offline tool's `--model` argument.
 For a different fine-tune, pass its reference audio/text to acceptance checks;
 the default fixture's exact transcript was measured with the original BuzzASR model.
 
+## Run on a Colab T4
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ameerhossein/LiquidWhisperLiveKit/blob/main/notebooks/colab_t4_streaming.ipynb)
+
+The notebook clones this repo, builds the pinned GPU runtime, downloads the
+private CT2 model, starts WhisperLiveKit, and prints a temporary Cloudflare URL
+for the microphone page.
+
+1. Runtime → Change runtime type → **T4 GPU**.
+2. Add a Colab Secret named **`HF_TOKEN`** with read access to the private
+   model repo (`Tools → Secrets`). Do not paste the token into a cell.
+3. **Runtime → Run all**, then open the `https://*.trycloudflare.com` URL and
+   allow microphone access.
+4. Run the final stop cell when finished.
+
+The tunnel is public while it runs. The notebook exposes `WLK_BEAM`,
+`WLK_TEMPERATURE`, and `ASR_COALESCE` as form parameters; re-run the
+start-server and tunnel cells after changing them.
+
 ## Decoding behavior
 
 ### Decoding defaults fight this model
