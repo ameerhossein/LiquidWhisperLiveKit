@@ -45,5 +45,5 @@ else
 fi
 .venv/bin/python scripts/fetch_model.py
 .venv/bin/python scripts/prepare_tokenizer.py
-.venv/bin/python scripts/build_ct2.py --validate-runtime --alignment-heads-fallback large-v3
+.venv/bin/python scripts/build_ct2.py --validate-runtime
 ./scripts/verify.sh

@@ -83,7 +83,7 @@ Required on the GPU box in that case: `models/buzzasr-persian-ct2-fp16/` (2.9 GB
 plus `scripts/`, `wlk/`, `run.sh`, `env.sh`, `testdata/`.
 
 Option B — rebuild from scratch: run `./setup.sh`, then
-`.venv/bin/python scripts/build_ct2.py --quantization float16 --alignment-heads-fallback large-v3`. Needs the 3.1 GB
+`.venv/bin/python scripts/build_ct2.py --quantization float16`. Needs the 3.1 GB
 HF download; the conversion itself takes ~40 s.
 
 ---
@@ -113,9 +113,7 @@ Notes
 
 ## 4. Verify the converted model before running anything
 
-The reference-model fp16 directory uses the language/vocabulary patches and
-the explicit large-v3 alignment fallback shown above. Source-provided
-alignment heads are preserved instead:
+The fp16 directory must carry the three patches (`build_ct2.py` writes them):
 
 ```bash
 .venv/bin/python - <<'PY'
@@ -131,9 +129,8 @@ PY
 ```
 
 Expected: `lang_ids [51908]`, `heads 10`, empty token at `220`, `fa 51908`,
-`notimestamps 51972`. The head count can legitimately differ when source heads
-are present. To rebuild the reference model with its explicit fallback, run
-`scripts/build_ct2.py --quantization float16 --alignment-heads-fallback large-v3`.
+`notimestamps 51972`. Any deviation means the artifact was rebuilt without the
+patch — re-run `scripts/build_ct2.py --quantization float16`.
 
 ---
 
