@@ -68,3 +68,46 @@ def test_public_tunnel_is_warned_about():
 def test_no_hf_token_literal():
     source = text(notebook())
     assert not re.search(r"hf_[A-Za-z0-9]{20,}", source)
+
+
+def test_stop_cell_is_opt_in():
+    source = code(notebook())
+    assert 'STOP_SERVER = False #@param {type:"boolean"}' in source
+    assert "if not STOP_SERVER" in source
+
+
+def test_self_test_runs_before_the_public_tunnel():
+    data = notebook()
+    cells = ["".join(cell["source"]) for cell in data["cells"] if cell["cell_type"] == "code"]
+    self_test = next(i for i, source in enumerate(cells) if "testdata/verify-fa.wav" in source)
+    tunnel = next(i for i, source in enumerate(cells) if '"--no-autoupdate"' in source)
+    assert self_test < tunnel
+
+
+def test_server_and_tunnel_drop_hf_token():
+    source = code(notebook())
+    assert 'env.pop("HF_TOKEN", None)' in source
+    assert 'env.pop("HUGGING_FACE_HUB_TOKEN", None)' in source
+    assert 'tunnel_env.pop("HF_TOKEN", None)' in source
+
+
+def test_setup_shares_the_project_hf_cache():
+    source = code(notebook())
+    assert '"HF_HOME": str(PROJECT_DIR / ".cache" / "hf")' in source
+    assert '"HF_HUB_CACHE": str(PROJECT_DIR / ".cache" / "hf" / "hub")' in source
+
+
+def test_cudnn_is_checked_and_remediated():
+    source = code(notebook())
+    assert "find_cudnn_library(" in source
+    assert '"float16", "compute type"' in source
+
+
+def test_gpu_check_guards_nvidia_smi():
+    assert 'shutil.which("nvidia-smi")' in code(notebook())
+
+
+def test_all_code_cells_compile():
+    for index, cell in enumerate(notebook()["cells"]):
+        if cell["cell_type"] == "code":
+            compile("".join(cell["source"]), f"cell-{index}", "exec")

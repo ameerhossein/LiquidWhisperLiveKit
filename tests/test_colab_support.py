@@ -64,3 +64,14 @@ def test_nvidia_library_dirs_only_returns_existing_dirs(tmp_path):
         str(tmp_path / "nvidia/cublas/lib"),
         str(tmp_path / "nvidia/cuda_runtime/lib"),
     ]
+
+
+def test_find_cudnn_library_in_venv(tmp_path):
+    lib = tmp_path / "nvidia/cudnn/lib/libcudnn_ops.so.9.1.0"
+    lib.parent.mkdir(parents=True)
+    lib.touch()
+    assert colab_support.find_cudnn_library(tmp_path, search_dirs=()) == str(lib)
+
+
+def test_find_cudnn_library_none(tmp_path):
+    assert colab_support.find_cudnn_library(tmp_path, search_dirs=()) is None

@@ -17,6 +17,11 @@ REQUIRED_CT2_FILES = (
 )
 
 _TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+SYSTEM_CUDNN_DIRS = (
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/local/cuda/lib64",
+    "/usr/lib64",
+)
 
 
 def _files_by_directory(files: Iterable[str]) -> dict[str, set[str]]:
@@ -87,3 +92,21 @@ def nvidia_library_dirs(site_packages: Union[str, Path]) -> list[str]:
         for component in ("cudnn", "cublas", "cuda_runtime")
         if (root / component / "lib").is_dir()
     ]
+
+
+def find_cudnn_library(
+    site_packages: Union[str, Path],
+    search_dirs: Iterable[Union[str, Path]] = SYSTEM_CUDNN_DIRS,
+) -> Union[str, None]:
+    """Return a cuDNN 9 ops library, preferring the venv copy over system dirs."""
+    directories = [
+        Path(site_packages) / "nvidia" / "cudnn" / "lib",
+        *(Path(directory) for directory in search_dirs),
+    ]
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        matches = sorted(directory.glob("libcudnn_ops.so.9*"))
+        if matches:
+            return str(matches[0])
+    return None

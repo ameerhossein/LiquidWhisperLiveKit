@@ -105,11 +105,13 @@ for the microphone page.
    model repo (`Tools → Secrets`). Do not paste the token into a cell.
 3. **Runtime → Run all**, then open the `https://*.trycloudflare.com` URL and
    allow microphone access.
-4. Run the final stop cell when finished.
+4. When finished, tick `STOP_SERVER` in the final cell and run it.
 
-The tunnel is public while it runs. The notebook exposes `WLK_BEAM`,
-`WLK_TEMPERATURE`, and `ASR_COALESCE` as form parameters; re-run the
-start-server and tunnel cells after changing them.
+The tunnel is public while it runs. The final stop cell is disabled by default,
+so Run all leaves the server and tunnel running. The notebook exposes
+`WLK_BEAM`, `WLK_TEMPERATURE`, and `ASR_COALESCE` as form parameters;
+after changing them, re-run the Configuration cell, then the start-server and
+tunnel cells.
 
 ## Decoding behavior
 
