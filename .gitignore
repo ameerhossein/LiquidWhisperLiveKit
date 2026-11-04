@@ -9,3 +9,12 @@ testdata/*.wav
 
 # whisperlivekit clone is tracked as a plain checkout, not a submodule here
 wlk/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Small reproducible Persian speech fixture for acceptance checks.
+!testdata/verify-fa.wav
+__pycache__/
+*.py[cod]
+.pytest_cache/

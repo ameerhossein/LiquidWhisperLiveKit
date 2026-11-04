@@ -5,14 +5,16 @@ import time
 
 import librosa
 from faster_whisper import WhisperModel
+from settings import decode_options, model_options, model_path, print_settings, require_model
 
 ROOT = "models/buzzasr-persian-ct2-int8"
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("audio", default="testdata/persian-sample.wav", nargs="?")
+    ap.add_argument("audio", default="testdata/verify-fa.wav", nargs="?")
     ap.add_argument("--audio-len", type=float, default=0, help="truncate audio to N seconds")
+    ap.add_argument("--profile", choices=("tuned", "baseline"), default=None)
     args = ap.parse_args()
 
     audio, _ = librosa.load(args.audio, sr=16000, mono=True)
@@ -22,10 +24,12 @@ def main():
 
     for threads in (4, 8, 12):
         for beam in (1, 5):
-            m = WhisperModel(ROOT, device="cpu", compute_type="int8", cpu_threads=threads)
+            options = decode_options(args.profile, beam)
+            runtime = model_options("cpu", threads)
+            print_settings(options, runtime)
+            m = WhisperModel(str(require_model(model_path("cpu"))), **runtime)
             t0 = time.time()
-            segs, info = m.transcribe(audio, language="fa", beam_size=beam,
-                                      condition_on_previous_text=False)
+            segs, info = m.transcribe(audio, language="fa", **options)
             text = " ".join(s.text.strip() for s in segs)
             dt = time.time() - t0
             print(f"threads={threads:2d} beam={beam} -> {dt:6.2f}s  "

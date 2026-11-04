@@ -157,7 +157,9 @@ restores upstream behaviour).
 subclassing `FasterWhisperASR`; WhisperLiveKit's own code is not edited.
 Knobs: `WLK_BEAM`, `WLK_TEMPERATURE`, `WLK_NO_REPEAT_NGRAM`,
 `WLK_REPETITION_PENALTY`, `WLK_NO_SPEECH_THRESHOLD`,
-`WLK_CONDITION_ON_PREVIOUS`, `WLK_USE_PROMPT`.
+`WLK_CONDITION_ON_PREVIOUS`, `WLK_USE_PROMPT`, `WLK_VAD_FILTER`
+(faster-whisper's internal silence stripping; helps accuracy on buffers that
+WhisperLiveKit pads with silence, at the cost of ~1 extra call per buffer).
 
 ---
 
@@ -173,6 +175,7 @@ RAM, no GPU. CTranslate2 `int8_float32`, `cpu_threads` default.
 | 4.1 s clean clip | ~10 s | floor is the 30 s padded encoder |
 | 5 s mid-sentence slice, greedy | ~22 s | worst case, loop-prone |
 | 9.6 s live stream, `ASR_COALESCE=6` | ~58 s to final | both updates correct |
+| 17.5 s live stream, `WLK_VAD_FILTER=1` | ~190 s processing (RTF 10.9), 9 calls | correct to sentence 3, then filler |
 
 The important number is the **~10 s floor per ASR call**: Whisper always encodes
 a padded 30 s window, and large-v3's encoder needs ~8–9 s on this CPU. Streaming
@@ -186,8 +189,13 @@ What helps on CPU:
 * keep buffers short (`--buffer_trimming_sec 10`) so degenerate buffers are dropped sooner;
 * nothing else moves the needle much — beam 1 vs 5 is only ~10 %.
 
-**Use a GPU for interactive use.** With `DEVICE=gpu` (float16, CUDA), the same
-pipeline is ~20–50× faster and latency drops to well under a second.
+**Use a GPU for interactive use.** See [`docs/CUDA_PLAN.md`](docs/CUDA_PLAN.md)
+for the host setup, the decoding matrix to re-test quality, and the pitfalls.
+GPU speed and latency depend on the hardware and have not been measured here; run the acceptance check and latency/quality tools on the target host. Precision is
+not the reason: on the 17.5 s clip, int8/fp32 differ only by "دانیست" vs
+"دانی است", and fp16-weights-in-fp32 on CPU costs 22.7 s vs 13.8 s for int8.
+The GPU's quality advantage is indirect — you can afford beam 5, temperature
+fallback and 0 s coalescing instead of the CPU-safe settings.
 
 ---
 
@@ -224,6 +232,62 @@ pipeline is ~20–50× faster and latency drops to well under a second.
 * Warmup uses a local Persian clip (`testdata/warmup-fa.wav`) instead of
   WhisperLiveKit's 60 kB GitHub download, so startup works offline.
 
+## Diarization (2 speakers good, 4 speakers mediocre)
+
+WhisperLiveKit's only CPU-viable diarizer is NeMo **Streaming Sortformer v2**
+(`nvidia/diar_streaming_sortformer_4spk-v2`, 471 MB); Diart pins `torch<2.9`.
+
+```bash
+source env.sh
+uv pip install "nemo_toolkit[asr]>=3.0,<4"        # 86 packages, already done here
+.venv/bin/python scripts/make_diar_test.py         # ground-truth clips from ~/fa_clips
+.venv/bin/python scripts/eval_diar.py testdata/diar-2spk.wav
+./run.sh --diarization --diarization-backend sortformer \
+         --sortformer-max-speakers 2 --pcm-input
+```
+
+`eval_diar.py` drives the same `SortformerDiarizationOnline` object the server
+uses, feeds the WAV in 0.5 s chunks, and scores the emitted `SpeakerSegment`s
+against the known turn boundaries (frame-level DER, 10 ms frames, optimal
+hypothesis→reference speaker mapping).
+
+| Mode | Clip | Speakers | Predicted | DER (miss / false-alarm / confusion) |
+|---|---|---|---|---|
+| streaming | `diar-2spk` 22.3 s | 2 | 2 | **12.1 %** (0.0 / 12.0 / 0.2) |
+| streaming | `diar-4spk-2min` 67.3 s | 4 | 4 | **48.0 %** (0.0 / 11.5 / 36.5) — two identities swapped |
+| offline, onset 0.5 | `diar-4spk-2min` | 4 | 4 | **45.2 %** (12.7 / 10.0 / 22.5) — 1:1 identity mapping |
+| offline, onset 0.1 | `diar-4spk-2min` | 4 | 4 | **43.8 %** (4.0 / 11.3 / 28.4) — 1:1 identity mapping |
+
+Methodology note: an earlier version of this table reported 36–74 % DER because
+`make_diar_test.py` labelled each clip's *entire file* as speech, including its
+lead-in/trailing silence — the diarizer was being punished for correctly treating
+silence as non-speech. The script now silence-trims every clip (30 dB), so a
+turn's `[start, end]` is speech. Numbers above use that corrected reference.
+
+Reading the numbers:
+
+* **2 speakers is good**: 12 % DER with perfect attribution; the 12 % false alarm
+  is the diarizer labelling the 0.45 s gaps between turns as a speaker, because
+  WhisperLiveKit's `_process_predictions` takes an `argmax` over speaker channels
+  with **no silence threshold** — there is no "no speaker" class in its output.
+* **4 speakers is mediocre**: all four channels appear, but streaming swaps two
+  identities (confusion 36.5 %). The **offline** NeMo runner (`model.diarize()`,
+  full-context, post-processed) keeps a correct 1:1 mapping and halves confusion,
+  at the cost of dropping ~5–13 % of speech.
+* A one-to-one mapping row of `{1:1, 2:3, 3:2, 4:4}` in the logs is the swap; it
+  is an identification error, not a missed speaker.
+
+Live check on `diar-2spk-short` (10.1 s, 4 turns): emitted lines carried the right
+speaker for their time range — `S1 [0.00-1.98]`, `S2 [2.56-3.14]` — matching turns
+1 and 2 exactly, while offline the same clip scored 4/4 turns at 100 % purity.
+The remaining live defect was the **ASR**, not the diarizer: under CPU load it
+committed only 2 of 4 turns before the client timeout and its text included
+hallucinated filler, so one long merged line looked like "everything is S1" even
+though its timestamps sat inside speaker 1's first turn.
+
+A GPU does **not** change DER (float32 on both sides); what it buys is the offline
+or rolling-window re-diarization pass, which fixes identity swaps for 4 speakers.
+
 ## Known limitations
 
 * **Silence hallucination.** With prompt carry-over enabled, buffers containing
@@ -231,6 +295,12 @@ pipeline is ~20–50× faster and latency drops to well under a second.
   prompts plus `no_speech_threshold=0.8` fixed it in testing, but any
   Whisper-family model can still hallucinate on long silences — verify output on
   your own audio before trusting it unattended.
+* **Late-buffer filler.** On longer streams the last update can append
+  YouTube-style filler ("در این مقاله قصد داریم …") after the real speech, where
+  the buffer is mostly trailing silence. `WLK_VAD_FILTER=1` removes most of it.
+* **Streaming is ~10× slower than real time on this CPU.** A 17.5 s stream made
+  6–9 ASR calls totalling ~190 s (RTF 10.9, p95 latency 48 s). Treat live use as
+  a correctness demo; use a GPU for anything interactive.
 * **REST is slow on CPU** — a 17.5 s upload takes minutes; `run.sh` raises
   `--rest-timeout` to 900 s. The WebSocket path is the one to demo.
 * **Persian only.** The tokenizer has no other language tokens; `--language fa`
@@ -243,3 +313,81 @@ All BuzzASR checkpoints share this layout. Change `--src`/`--tok` in
 `scripts/prepare_tokenizer.py`, then `--src`/`--tok`/`--out-prefix` in
 `scripts/build_ct2.py`, and update three constants: the language id
 (`<|xx|>`), the `lang_ids` patch, and `--language` in `run.sh`.
+
+
+## Reliability fixes and reproducible setup
+
+`./setup.sh` now pins WhisperLiveKit to commit
+`363e4f6d029694d9c81ae548beddd9d3c88a3637`, installs the Python 3.12 runtime
+closure from `requirements.lock`, and fetches every model asset listed in
+`model-manifest.json` at a fixed Hugging Face revision with integrity checks.
+Torch and torchaudio use a matched 2.11.0 pair, installed separately for CPU or
+CUDA. For CUDA, set `DEVICE=gpu` and, when needed, `TORCH_INDEX_URL` to the
+appropriate official PyTorch wheel index. The existing venv is not silently
+recreated. `uv`, `git`, `ffmpeg`, and `curl` are required.
+
+`env.sh` derives its location from the checkout, so the project can be moved.
+`DEVICE=cpu` explicitly selects CPU/int8_float32; `DEVICE=gpu` or `cuda` selects
+CUDA/float16 and fails if CUDA is unavailable. Metal is unsupported by this
+CTranslate2 adaptation. Launchers check required model files before loading.
+
+Downloads use append-only parts under `<output>.download-v2/`, validate each
+Content-Range, bind resume state to the resource and layout, and publish only
+a completed, checksum-verified replacement. Old sparse `.partN` files are never
+reused. Converter failures preserve the previous model. Metadata validation no
+longer loads the fp16 model into CPU RAM; `--validate-runtime` additionally loads
+each int8 model once.
+
+All transcription and benchmark scripts share `WLK_PROFILE=tuned` (default) or
+`WLK_PROFILE=baseline`. Existing WLK decoding overrides still apply. Use
+`--profile` on the offline and benchmark scripts. Resolved settings are printed.
+`WLK_USE_PROMPT=0` disables rolling transcript history while preserving explicit
+REST `prompt` / WebSocket `context`. `WLK_USE_PROMPT=1` restores both, and the
+baseline server profile enables history by default. `WLK_CPU_THREADS=0` uses
+CTranslate2's default; set a positive value to tune CPU work. `WLK_NUM_WORKERS`
+configures the model worker pool; upstream session locking still serializes
+calls to the shared ASR model. Server INFO logs include ASR call count and time.
+The tuned launcher defaults to `WLK_VAC=0`, preserving continuous audio instead
+of forcing inference on subsecond pause fragments. This fixed a reproduced
+hallucinated paragraph on a 0.67-second fragment. Use `WLK_VAC=1` to explicitly
+compare upstream pause splitting; the baseline profile retains that behavior.
+
+Run `./scripts/verify.sh` for offline, REST and WebSocket acceptance against the
+checked-in `testdata/verify-fa.wav` and its expected Persian transcript. A custom
+file must produce text and valid word timings; set `EXPECTED_FILE` to also
+check its reference. HTTP errors, missing finalization and timeouts fail the
+check. `REST_TIMEOUT` sets the common REST/WS finish budget; results and server
+logs are retained under `.cache/verify-*/`.
+
+`stream_test.py --json-output result.json` records time to first partial,
+first committed text, and finalization. `transcribe.py --json-output result.json`
+records text, word boundaries, ASR time, RTF and peak process RSS. Compare either with a reference JSON:
+
+```bash
+.venv/bin/python scripts/eval_quality.py reference.json result.json
+```
+
+References contain `{"text": "..."}` and optionally manually annotated `words`
+with `word`, `start`, and `end` fields. The tool reports raw and normalized
+Persian CER/WER. Matching word sequences also get boundary MAE/p95; inherited
+large-v3 attention heads still require manual Persian alignment validation.
+Normalization changes evaluation only, preserving display spelling.
+
+Diarization comparison now retains cumulative prediction history, feeds tensors
+to the model device, rejects non-16-kHz input, drains all full model chunks, and
+pads/clips the final tail in both drivers. Historical comparison scores must be
+rerun. DER uses 10 ms frames, no boundary collar, and one speaker per frame;
+overlapping speech is unsupported. Both drivers retain the model integration's
+argmax speaker policy, including during silence.
+
+Regression checks (install `pytest==9.1.1 pytest-asyncio==1.4.0` in a test environment):
+
+```bash
+source env.sh
+.venv/bin/python -m pytest tests wlk/tests/test_asr_coalescing.py wlk/tests/test_session_context.py -q
+```
+
+To regenerate the runtime lock on Python 3.12, compile `requirements.txt` and
+the pinned `wlk/pyproject.toml` with torch/torchaudio constrained to 2.11.0, then
+exclude their two entries from the runtime lock (setup installs that pair per
+device). Optional diarization dependencies are separate from this ASR lock.

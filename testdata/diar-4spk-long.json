@@ -1,0 +1,38 @@
+[
+ {
+  "start": 0.0,
+  "end": 4.352,
+  "speaker": "spk_25692",
+  "source": "clip0_id1.wav+clip1_id16.wav"
+ },
+ {
+  "start": 4.802,
+  "end": 8.738,
+  "speaker": "spk_27383",
+  "source": "clip0_id6.wav+clip1_id61.wav"
+ },
+ {
+  "start": 9.188,
+  "end": 18.884,
+  "speaker": "spk_52762",
+  "source": "clip0_id7.wav+clip1_id152.wav"
+ },
+ {
+  "start": 19.334,
+  "end": 27.846,
+  "speaker": "spk_77323",
+  "source": "clip0_id3.wav+clip1_id247.wav"
+ },
+ {
+  "start": 28.296,
+  "end": 30.728,
+  "speaker": "spk_25692",
+  "source": "clip2_id69.wav"
+ },
+ {
+  "start": 31.178,
+  "end": 40.106,
+  "speaker": "spk_27383",
+  "source": "clip2_id67.wav"
+ }
+]

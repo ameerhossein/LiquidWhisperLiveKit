@@ -1,0 +1,26 @@
+[
+ {
+  "start": 0.0,
+  "end": 1.952,
+  "speaker": "spk_25692",
+  "source": "clip0_id1.wav"
+ },
+ {
+  "start": 2.402,
+  "end": 3.81,
+  "speaker": "spk_27383",
+  "source": "clip0_id6.wav"
+ },
+ {
+  "start": 4.26,
+  "end": 6.66,
+  "speaker": "spk_25692",
+  "source": "clip1_id16.wav"
+ },
+ {
+  "start": 7.11,
+  "end": 9.638,
+  "speaker": "spk_27383",
+  "source": "clip1_id61.wav"
+ }
+]

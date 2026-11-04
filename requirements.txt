@@ -1,0 +1,16 @@
+# Tested adaptation/runtime versions. Torch is installed separately per device.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+transformers==5.20.2
+tokenizers==0.23.3
+safetensors==0.8.0
+fastapi==0.156.0
+starlette==1.9.0
+uvicorn==0.54.0
+websockets==17.2
+huggingface-hub==2.2.0
+librosa==1.0.0
+soundfile==0.14.0
+python-multipart==0.0.32
+numpy==2.5.4
+scipy==1.18.1

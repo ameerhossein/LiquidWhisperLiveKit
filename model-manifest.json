@@ -1,0 +1,16 @@
+{
+  "repo": "BuzzASR/persian",
+  "revision": "3903cb82fdebfb9471deaab108aa8e4359067e24",
+  "files": {
+    "model.safetensors": {"sha256": "fd91267e6c21939fa28d7bc7f1b887b009dd2e3489a11c3ca6244942bb7e0752"},
+    "added_tokens.json": {"git_blob": "88b5cbc27107ba6283f926b76d15484ec1fa20ea"},
+    "config.json": {"git_blob": "8b00263315d691527e2e19699feeade3b6d86b27"},
+    "generation_config.json": {"git_blob": "265b9f367f82779fa52fca24475ff9c092a90b31"},
+    "merges.txt": {"git_blob": "d542f1b79979cfc75f20ef3a09072490d96588e4"},
+    "normalizer.json": {"git_blob": "dd6ae819ad738ac1a546e9f9282ef325c33b9ea0"},
+    "preprocessor_config.json": {"git_blob": "3f567c1115178e9fd2e1ef818dca934e22ca0c85"},
+    "special_tokens_map.json": {"git_blob": "312bc106291bb51bf2cc1648df070bef963a0639"},
+    "tokenizer_config.json": {"git_blob": "0f6620d7c91ad498f789d3d93510075124c70650"},
+    "vocab.json": {"git_blob": "9b41188cdd2a5f3366f51fc27e2887852e996459"}
+  }
+}

@@ -9,18 +9,20 @@ set -euo pipefail
 cd "$(dirname "$0")"
 source env.sh
 
-DEVICE="${DEVICE:-cpu}"
+export DEVICE="${DEVICE:-cpu}"
 case "$DEVICE" in
-  cpu)            MODEL_DIR="models/buzzasr-persian-ct2-int8" ;;
-  gpu|cuda|metal) MODEL_DIR="models/buzzasr-persian-ct2-fp16" ;;
-  *) echo "DEVICE must be cpu or gpu (got '$DEVICE')" >&2; exit 2 ;;
+  cpu)            DEFAULT_MODEL_DIR="models/buzzasr-persian-ct2-int8" ;;
+  gpu|cuda)       DEFAULT_MODEL_DIR="models/buzzasr-persian-ct2-fp16" ;;
+  *) echo "DEVICE must be cpu, gpu, or cuda (Metal is unsupported) (got '$DEVICE')" >&2; exit 2 ;;
 esac
+export MODEL_DIR="${MODEL_DIR:-$DEFAULT_MODEL_DIR}"
 
 if [[ ! -d "$MODEL_DIR" ]]; then
   echo "Model not built yet: $MODEL_DIR" >&2
   echo "Run: source env.sh && .venv/bin/python scripts/build_ct2.py" >&2
   exit 2
 fi
+.venv/bin/python scripts/settings.py --check-model "$MODEL_DIR"
 
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"

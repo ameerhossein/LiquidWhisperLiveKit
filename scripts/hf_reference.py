@@ -12,7 +12,7 @@ import time
 
 import librosa
 import torch
-from transformers import AutoProcessor, WhisperForConditionalGeneration
+from transformers import AutoProcessor, AutoTokenizer, WhisperForConditionalGeneration
 
 ROOT = "models/buzzasr-persian"
 
@@ -48,8 +48,8 @@ def main():
     text_orig = processor.tokenizer.decode(ids[0], skip_special_tokens=True)
     print(f"\nprocessor.tokenizer: {text_orig!r}")
 
-    fixed = AutoProcessor.from_pretrained("models/buzzasr-persian-tok")
-    print(f"fixed tokenizer:     {fixed.tokenizer.decode(ids[0], skip_special_tokens=True)!r}")
+    fixed = AutoTokenizer.from_pretrained("models/buzzasr-persian-tok", use_fast=True)
+    print(f"fixed tokenizer:     {fixed.decode(ids[0], skip_special_tokens=True)!r}")
     print("\nfirst ids:", ids[0][:12].tolist())
 
 
