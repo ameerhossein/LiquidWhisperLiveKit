@@ -47,7 +47,8 @@ is right; the *latency* is CPU-bound (see [Performance](#performance)).
 ```bash
 source env.sh                                    # venv + project-local caches
 .venv/bin/python scripts/prepare_tokenizer.py    # rebuild corrected tokenizer
-.venv/bin/python scripts/build_ct2.py            # HF -> int8 (CPU) + float16 (GPU)
+.venv/bin/python scripts/build_ct2.py --alignment-heads-fallback large-v3
+                                                # HF -> int8 (CPU) + float16 (GPU)
 ./scripts/verify.sh                              # offline + REST + WebSocket
 ./run.sh                                         # serve
 ```
@@ -124,8 +125,13 @@ with `tokenizer.json`, not this file, so nothing else is affected.
   `detect_language()` would fail. The build script writes `lang_ids: [51908]`.
 * BuzzASR ships **no alignment heads**. The converter's fallback ("last half of
   the layers × every head" = 320 heads) produced word timings that collapsed
-  onto identical values. The build script installs whisper-large-v3's 10
-  published heads, which fixes timing and removes the DTW overhead.
+  onto identical values in earlier local tests. The builder preserves any
+  source `alignment_heads`. When none are supplied, it keeps the converter's
+  architecture-aware fallback unless `--alignment-heads-fallback large-v3` is
+  explicitly selected. Setup and the reference-model quick start opt into
+  OpenAI large-v3's 10 published heads. These are a starting point, and still
+  require Persian word-boundary validation. All head indices are checked
+  against the source architecture.
 
 ### 4. Decoding defaults fight this model
 
@@ -337,6 +343,20 @@ a completed, checksum-verified replacement. Old sparse `.partN` files are never
 reused. Converter failures preserve the previous model. Metadata validation no
 longer loads the fp16 model into CPU RAM; `--validate-runtime` additionally loads
 each int8 model once.
+
+Each invocation assembles its HF inputs in a unique temporary subdirectory
+under `--build-dir`; concurrent builds cannot redirect one another's weights.
+The CT2 vocabulary is checked against every tokenizer ID, allowing only the
+documented empty-string substitution at row 220. `source_config.json` records
+the source architecture used to validate alignment-head indices.
+
+Both `model.safetensors` and indexed sharded safetensors are accepted. Every
+referenced shard must exist and contain exactly the tensors listed for it in
+`model.safetensors.index.json`. `--min-weight-bytes` applies to their combined
+size. Use `--weights-sha256` for a single-file digest, or `--weights-checksums
+checksums.json` with a JSON object mapping every weight filename to its SHA256
+for per-file verification, including sharded exports. No weights are copied
+into the temporary HF directory; it links to the checked source files.
 
 All transcription and benchmark scripts share `WLK_PROFILE=tuned` (default) or
 `WLK_PROFILE=baseline`. Existing WLK decoding overrides still apply. Use

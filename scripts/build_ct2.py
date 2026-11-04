@@ -18,13 +18,13 @@ Post-processing the stock converter does not do:
     generation_config.lang_to_id, but transformers 5 drops unknown GenerationConfig
     fields, leaving lang_ids empty and detect_language() unusable.
 
-  * config.json alignment_heads -- BuzzASR ships no alignment heads, so the
-    converter falls back to "last half of layers x every head" (320 heads). Word
-    timestamps then collapse onto identical values and DTW gets slow. The
-    inherited architecture makes its 10 published heads a starting point
-    requiring Persian boundary validation (openai/whisper-large-v3 generation_config.json).
+  * Preserve source alignment_heads and validate their layer/head indices.
+    Without source heads, keep the converter's architecture-aware fallback.
+    --alignment-heads-fallback large-v3 explicitly opts into OpenAI's heads;
+    these still require Persian word-boundary validation.
 """
 import argparse
+from dataclasses import dataclass
 import json
 import shutil
 import subprocess
@@ -48,30 +48,79 @@ TARGETS = {
 }
 
 
-def check_weights(src: Path, min_size: int, expected_sha256=None):
-    w = src / "model.safetensors"
-    if not w.is_file():
-        sys.exit(f"missing weights: {w}")
-    size = w.stat().st_size
+@dataclass(frozen=True)
+class WeightFiles:
+    files: tuple[Path, ...]
+    index: Path | None = None
+
+
+def _read_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _shard_path(src, name):
+    path = Path(name)
+    if path.is_absolute() or ".." in path.parts or path.suffix != ".safetensors":
+        raise ValueError(f"Invalid shard path: {name}")
+    # Hub snapshots legitimately symlink shards into a shared blob cache.
+    # Reject index path traversal while permitting these explicit file links.
+    return src / path
+
+
+def check_weights(src: Path, min_size: int, expected_sha256=None, expected_shards=None):
+    src = Path(src)
+    single = src / "model.safetensors"
+    index = src / "model.safetensors.index.json"
+    weight_map = None
+    if single.is_file():
+        weights = WeightFiles((single,))
+    elif index.is_file():
+        weight_map = _read_json(index).get("weight_map")
+        if not isinstance(weight_map, dict) or not weight_map or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in weight_map.items()
+        ):
+            raise ValueError(f"Invalid weight_map in {index}")
+        weights = WeightFiles(tuple(_shard_path(src, name) for name in sorted(set(weight_map.values()))), index)
+        if expected_sha256:
+            raise ValueError("--weights-sha256 requires a single file; use --weights-checksums for shards")
+    else:
+        sys.exit(f"missing model.safetensors or model.safetensors.index.json in {src}")
+    for path in weights.files:
+        if not path.is_file():
+            raise ValueError(f"Missing weight shard: {path}")
+    size = sum(path.stat().st_size for path in weights.files)
     if size < min_size:
-        sys.exit(f"{w} looks incomplete ({size} bytes)")
-    if expected_sha256 is None and w.resolve() == (ROOT / "models/buzzasr-persian/model.safetensors").resolve():
-        manifest = json.loads((ROOT / "model-manifest.json").read_text())
+        sys.exit(f"{src} weights look incomplete ({size} bytes total)")
+    if expected_sha256 is None and single.is_file() and single.resolve() == (ROOT / "models/buzzasr-persian/model.safetensors").resolve():
+        manifest = _read_json(ROOT / "model-manifest.json")
         expected_sha256 = manifest["files"]["model.safetensors"]["sha256"]
+    checksums = dict(expected_shards or {})
+    if expected_shards is not None and set(checksums) != {str(path.relative_to(src)) for path in weights.files}:
+        raise ValueError("--weights-checksums must specify every weight file exactly once")
     if expected_sha256:
-        from fetch import sha256
-        if sha256(w) != expected_sha256.lower():
-            sys.exit(f"Checksum mismatch: {w}; run scripts/fetch_model.py before converting")
+        checksums["model.safetensors"] = expected_sha256
+    from fetch import sha256
     from safetensors import safe_open
 
-    with safe_open(str(w), framework="pt") as f:
-        tensors = list(f.keys())
-    print(f"weights OK: {size / 1e9:.2f} GB, {len(tensors)} tensors")
-    return w
+    tensor_count = 0
+    for path in weights.files:
+        name = str(path.relative_to(src))
+        expected = checksums.get(name)
+        if expected is not None and sha256(path) != expected.lower():
+            sys.exit(f"Checksum mismatch: {path}")
+        with safe_open(str(path), framework="pt") as stream:
+            tensors = set(stream.keys())
+        if weight_map is not None and tensors != {key for key, shard in weight_map.items() if shard == name}:
+            raise ValueError(f"Shard tensors do not match weight_map: {name}")
+        tensor_count += len(tensors)
+    print(f"weights OK: {size / 1e9:.2f} GB, {tensor_count} tensors in {len(weights.files)} file(s)")
+    return weights
 
 
-def assemble_hf_dir(src: Path, tok: Path, build: Path, weights: Path):
-    build.mkdir(parents=True, exist_ok=True)
+def assemble_hf_dir(src: Path, tok: Path, build: Path, weights: WeightFiles):
+    # Never mutate a previous invocation's inputs. main() provides a unique
+    # directory; direct callers must also choose a new directory.
+    build.mkdir(parents=True, exist_ok=False)
     for name in ("config.json", "generation_config.json"):
         shutil.copy2(src / name, build / name)
     pre = src / "preprocessor_config.json"
@@ -90,13 +139,38 @@ def assemble_hf_dir(src: Path, tok: Path, build: Path, weights: Path):
             json.dumps(feature_extractor, indent=2), encoding="utf-8")
     for name in ("tokenizer.json", "tokenizer_config.json", "normalizer.json"):
         shutil.copy2(tok / name, build / name)
-    link = build / "model.safetensors"
-    if link.exists() or link.is_symlink():
-        link.unlink()
-    link.symlink_to(weights.resolve())
+    if weights.index is not None:
+        shutil.copy2(weights.index, build / weights.index.name)
+    for path in weights.files:
+        link = build / path.relative_to(src)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(path.resolve())
 
 
-def _convert_files(build: Path, quantization: str, dst: Path):
+def _validate_alignment_heads(heads, model_config):
+    layers = model_config["decoder_layers"]
+    count = model_config["decoder_attention_heads"]
+    if not isinstance(heads, list) or not heads:
+        raise ValueError("alignment_heads must be a nonempty list")
+    for pair in heads:
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or any(type(value) is not int for value in pair)
+                or not 0 <= pair[0] < layers or not 0 <= pair[1] < count):
+            raise ValueError(f"Invalid alignment head {pair!r} for {layers} layers and {count} heads")
+    return heads
+
+
+def _convert_files(build: Path, quantization: str, dst: Path, alignment_fallback="converter"):
+    model_config = _read_json(build / "config.json")
+    generation = _read_json(build / "generation_config.json")
+    source_heads = generation.get("alignment_heads")
+    if alignment_fallback not in ("converter", "large-v3"):
+        raise ValueError(f"Unknown alignment fallback: {alignment_fallback}")
+    requested_heads = source_heads
+    if requested_heads is None and alignment_fallback == "large-v3":
+        requested_heads = LARGE_V3_ALIGNMENT_HEADS
+    if requested_heads is not None:
+        _validate_alignment_heads(requested_heads, model_config)
     print(f"\n=== {quantization}: {build} -> {dst}")
     cmd = [
         str(Path(sys.executable).with_name("ct2-transformers-converter")),
@@ -112,18 +186,23 @@ def _convert_files(build: Path, quantization: str, dst: Path):
     cfg_path = dst / "config.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg["lang_ids"] = [51908]
-    cfg["alignment_heads"] = LARGE_V3_ALIGNMENT_HEADS
+    if requested_heads is not None:
+        cfg["alignment_heads"] = requested_heads
+    _validate_alignment_heads(cfg.get("alignment_heads"), model_config)
     cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    print("patched config.json: lang_ids=[51908] (<|fa|>), "
-          f"alignment_heads={len(LARGE_V3_ALIGNMENT_HEADS)} (large-v3)")
+    shutil.copy2(build / "config.json", dst / "source_config.json")
+    print(f"config.json: lang_ids=[51908] (<|fa|>), alignment_heads={len(cfg['alignment_heads'])} "
+          f"({'source' if source_heads is not None else alignment_fallback})")
 
     vocab_path = dst / "vocabulary.json"
     vocab = json.loads(vocab_path.read_text(encoding="utf-8"))
-    if "" not in vocab:
-        old = vocab[220]
-        vocab[220] = ""
-        vocab_path.write_text(json.dumps(vocab, ensure_ascii=False), encoding="utf-8")
-        print(f"patched vocabulary[220]: {old!r} -> '' (marks model multilingual)")
+    if len(vocab) != 53474 or vocab[220] not in ("<|UNUSED220|>", ""):
+        raise ValueError("Cannot apply multilingual patch: row 220 is not the unused BuzzASR placeholder")
+    if "" in vocab[:220] + vocab[221:]:
+        raise ValueError("Unexpected empty token outside vocabulary row 220")
+    vocab[220] = ""
+    vocab_path.write_text(json.dumps(vocab, ensure_ascii=False), encoding="utf-8")
+    print("patched vocabulary[220] -> '' (marks model multilingual)")
     print("size:", round(sum(p.stat().st_size for p in dst.iterdir()) / 1e9, 2), "GB")
 
 
@@ -135,8 +214,9 @@ def validate(dst: Path, quantization: str, runtime=False):
     require_model(dst)
     cfg = json.loads((dst / "config.json").read_text())
     vocab = json.loads((dst / "vocabulary.json").read_text())
-    if cfg.get("lang_ids") != [51908] or cfg.get("alignment_heads") != LARGE_V3_ALIGNMENT_HEADS:
-        raise ValueError("Missing BuzzASR language/alignment patches")
+    if cfg.get("lang_ids") != [51908]:
+        raise ValueError("Missing BuzzASR language patch")
+    _validate_alignment_heads(cfg.get("alignment_heads"), _read_json(dst / "source_config.json"))
     if len(vocab) != 53474 or vocab[220] != "":
         raise ValueError("Missing multilingual vocabulary patch")
     tok = tokenizers.Tokenizer.from_file(str(dst / "tokenizer.json"))
@@ -145,6 +225,13 @@ def validate(dst: Path, quantization: str, runtime=False):
     for token, expected in CHECKS.items():
         if tok.token_to_id(token) != expected:
             raise ValueError(f"Wrong token id for {token}")
+    for index, token in enumerate(vocab):
+        expected = tok.id_to_token(index)
+        if index == 220:
+            if expected != "<|UNUSED220|>":
+                raise ValueError("Tokenizer row 220 is not the expected unused placeholder")
+        elif token != expected:
+            raise ValueError(f"CT2 vocabulary/tokenizer mismatch at ID {index}: {token!r} != {expected!r}")
     if runtime and quantization.startswith("int8"):
         from faster_whisper import WhisperModel
         model = WhisperModel(str(dst), device="cpu", compute_type="int8_float32")
@@ -156,12 +243,12 @@ def validate(dst: Path, quantization: str, runtime=False):
     print(f"Validated {dst.name} ({'runtime' if runtime and quantization.startswith('int8') else 'metadata'})")
 
 
-def convert(build: Path, quantization: str, dst: Path, runtime=False):
+def convert(build: Path, quantization: str, dst: Path, runtime=False, alignment_fallback="converter"):
     """Build/validate away from the live artifact; restore it on publish failure."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{dst.name}-build-", dir=dst.parent) as temporary:
         staged = Path(temporary) / "model"
-        _convert_files(build, quantization, staged)
+        _convert_files(build, quantization, staged, alignment_fallback=alignment_fallback)
         validate(staged, quantization, runtime=runtime)
         # Keep the backup outside the temporary build tree: if rollback itself
         # fails (e.g. filesystem error), cleanup must never delete the old model.
@@ -182,28 +269,38 @@ def convert(build: Path, quantization: str, dst: Path, runtime=False):
 
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--quantization", choices=["int8_float32", "float16", "both"], default="both")
     ap.add_argument("--src", default=str(ROOT / "models/buzzasr-persian"))
     ap.add_argument("--tok", default=str(ROOT / "models/buzzasr-persian-tok"))
-    ap.add_argument("--build-dir", default=str(ROOT / "models/buzzasr-persian-hf"))
+    ap.add_argument("--build-dir", default=str(ROOT / "models/buzzasr-persian-hf"),
+                    help="Scratch parent; each invocation uses a unique temporary subdirectory")
     ap.add_argument("--out-prefix", default=str(ROOT / "models"))
     ap.add_argument("--min-weight-bytes", type=int, default=3_000_000_000)
     ap.add_argument("--weights-sha256", help="Expected digest for a custom source checkpoint")
+    ap.add_argument("--weights-checksums", type=Path,
+                    help="JSON mapping every weight filename to its SHA256 (supports sharded checkpoints)")
+    ap.add_argument("--alignment-heads-fallback", choices=["converter", "large-v3"], default="converter",
+                    help="When source heads are absent: keep converter heads, or explicitly use OpenAI large-v3 heads")
     ap.add_argument("--validate-runtime", action="store_true",
                     help="Also load each int8 model once on CPU; fp16 checks stay metadata-only")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     src, tok = Path(args.src), Path(args.tok)
-    weights = check_weights(src, args.min_weight_bytes, args.weights_sha256)
-    build = Path(args.build_dir)
-    assemble_hf_dir(src, tok, build, weights)
+    checksums = _read_json(args.weights_checksums) if args.weights_checksums else None
+    weights = check_weights(src, args.min_weight_bytes, args.weights_sha256, checksums)
+    scratch = Path(args.build_dir)
+    scratch.mkdir(parents=True, exist_ok=True)
 
     targets = TARGETS if args.quantization == "both" else {args.quantization: TARGETS[args.quantization]}
     dirs = {q: Path(args.out_prefix) / name for q, name in targets.items()}
-    for quant, dst in dirs.items():
-        convert(build, quant, dst, runtime=args.validate_runtime)
+    with tempfile.TemporaryDirectory(prefix=".ct2-source-", dir=scratch) as temporary:
+        build = Path(temporary) / "hf"
+        assemble_hf_dir(src, tok, build, weights)
+        for quant, dst in dirs.items():
+            convert(build, quant, dst, runtime=args.validate_runtime,
+                    alignment_fallback=args.alignment_heads_fallback)
 
     print("\nOK – ready for WhisperLiveKit")
 

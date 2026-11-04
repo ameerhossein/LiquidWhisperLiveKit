@@ -19,7 +19,7 @@ export MODEL_DIR="${MODEL_DIR:-$DEFAULT_MODEL_DIR}"
 
 if [[ ! -d "$MODEL_DIR" ]]; then
   echo "Model not built yet: $MODEL_DIR" >&2
-  echo "Run: source env.sh && .venv/bin/python scripts/build_ct2.py" >&2
+  echo "Run: source env.sh && .venv/bin/python scripts/build_ct2.py --alignment-heads-fallback large-v3" >&2
   exit 2
 fi
 .venv/bin/python scripts/settings.py --check-model "$MODEL_DIR"
