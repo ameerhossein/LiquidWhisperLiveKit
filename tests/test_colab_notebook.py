@@ -31,6 +31,7 @@ def test_config_defaults():
     assert "WLK_BEAM = 1" in source
     assert 'WLK_TEMPERATURE = "0.0"' in source
     assert 'ASR_COALESCE = "0"' in source
+    assert 'WLK_VAD_FILTER = "1"' in source
     assert "PORT = 8000" in source
 
 
@@ -51,6 +52,7 @@ def test_runtime_contract():
     assert '"DEVICE": "gpu"' in source
     assert '"--pcm-input"' in source
     assert '"ASR_COALESCE": str(ASR_COALESCE)' in source
+    assert '"WLK_VAD_FILTER": str(WLK_VAD_FILTER)' in source
     assert '"nvidia-cudnn-cu12==9.*"' in source
     assert 'get_supported_compute_types("cuda")' in source
     assert "float16" in source

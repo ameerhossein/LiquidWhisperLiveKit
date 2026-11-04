@@ -109,9 +109,13 @@ for the microphone page.
 
 The tunnel is public while it runs. The final stop cell is disabled by default,
 so Run all leaves the server and tunnel running. The notebook exposes
-`WLK_BEAM`, `WLK_TEMPERATURE`, and `ASR_COALESCE` as form parameters;
-after changing them, re-run the Configuration cell, then the start-server and
-tunnel cells.
+`WLK_BEAM`, `WLK_TEMPERATURE`, `ASR_COALESCE`, and `WLK_VAD_FILTER` as form
+parameters; after changing them, re-run the Configuration cell, then the
+start-server and tunnel cells.
+
+`WLK_VAD_FILTER` defaults to `1` in the notebook. It runs Silero VAD inside each
+ASR buffer and suppresses the fluent-Persian hallucinations this model produces
+on silence; set it to `0` only when comparing the faster, un-gated path.
 
 ## Decoding behavior
 
